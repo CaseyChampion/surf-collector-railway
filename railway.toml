@@ -1,0 +1,6 @@
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "python collect_data.py"
+restartPolicyType = "NEVER"
