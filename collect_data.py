@@ -37,7 +37,7 @@ SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": USER_AGENT})
 
 
-def supabase_insert(table: str, row: dict) -> list:
+def supabase_insert(table, row):
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = {
         "apikey": SUPABASE_KEY,
@@ -45,10 +45,14 @@ def supabase_insert(table: str, row: dict) -> list:
         "Content-Type": "application/json",
         "Prefer": "return=representation",
     }
-    response = SESSION.post(url, headers=headers, json=row, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    return response.json()
 
+    r = requests.post(url, headers=headers, json=row, timeout=10)
+
+    print("STATUS:", r.status_code)
+    print("RESPONSE:", r.text)
+
+    r.raise_for_status()
+    return r.json()
 
 def deg2comp(direction_deg):
     if direction_deg is None:
