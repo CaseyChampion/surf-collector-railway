@@ -107,7 +107,8 @@ def supabase_insert(table, row):
         "Prefer": "return=representation",
     }
     r = requests.post(url, headers=headers, json=row, timeout=15)
-    r.raise_for_status()
+    if not r.ok:
+        raise Exception(f"Supabase {r.status_code}: {r.text}")
     return r.json()
  
 # ── Fetchers ──────────────────────────────────────────────────────────────────
