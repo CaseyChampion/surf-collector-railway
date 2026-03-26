@@ -1,12 +1,16 @@
 """
-Del Mar Surf Data Collector v3
+Del Mar Surf Data Collector v4
 Schema locked — DO NOT change field names or types.
  
 Buoys:
   b54 = 46054 West Santa Barbara  (~200mi NW, NW swell 8-10hr lead)
   b11 = 46011 Santa Maria         (~170mi NW, NW swell 10-12hr lead)
+  b47 = 46047 Tanner Banks        (~121mi W,  NW/SW intermediate, ~4-6hr lead)
   b86 = 46086 San Clemente Basin  (~60mi W,   SW/SSW indicator)
   b25 = 46225 Torrey Pines Outer  (~7mi W,    local nearshore)
+ 
+Changes in v4:
+  - b47 (46047 Tanner Banks) re-added — went adrift Mar 2025, redeployed Mar 2026
  
 Fixes in v3:
   - b47 replaced with b54 (46054) and b11 (46011) — 46047 adrift since Mar 2025
@@ -36,6 +40,7 @@ LOCAL_TZ = timezone(timedelta(hours=-7))  # currently PDT
 BUOYS = [
     {"id": "46054", "key": "b54", "name": "West Santa Barbara"},  # NW lead ~8-10hr
     {"id": "46011", "key": "b11", "name": "Santa Maria"},         # NW lead ~10-12hr
+    {"id": "46047", "key": "b47", "name": "Tanner Banks"},        # NW/SW intermediate ~4-6hr lead
     {"id": "46086", "key": "b86", "name": "San Clemente Basin"},  # SW indicator
     {"id": "46225", "key": "b25", "name": "Torrey Pines Outer"},  # local nearshore
 ]
@@ -270,12 +275,8 @@ def fetch_tides():
         elif nxt["v"] < prev["v"]:
             phase = "falling"
         else:
-            # at peak — determine by looking at derivative (sine curve slope)
-            # near frac=0.5 (peak) slope is near zero, check which side we're on
             phase = "at_peak"
     else:
-        # prev == nxt means we're past last prediction of the day
-        # use the type of the last known hi/lo
         phase = "at_high" if prev["type"] == "H" else "at_low"
  
     future    = [p for p in hilo if p["t"] > now]
@@ -333,7 +334,7 @@ def build_row(marine, buoy_data, wind, tides, now_utc, now_local):
         "spot": "8th-15th St Del Mar",
     }
  
-    # Buoys
+    # Buoys — loops over BUOYS list, so b47 is picked up automatically
     for b in BUOYS:
         k = b["key"]
         d = buoy_data.get(k, {})
@@ -394,4 +395,3 @@ def collect():
  
 if __name__ == "__main__":
     collect()
- 
