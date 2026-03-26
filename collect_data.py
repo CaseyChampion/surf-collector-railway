@@ -265,9 +265,18 @@ def fetch_tides():
         elapsed = (now - prev["t"]).total_seconds()
         frac    = max(0.0, min(1.0, elapsed / total))
         v       = prev["v"] + (nxt["v"] - prev["v"]) * (1 - math.cos(frac * math.pi)) / 2
-        phase   = "rising" if nxt["v"] > prev["v"] else "falling"
+        if nxt["v"] > prev["v"]:
+            phase = "rising"
+        elif nxt["v"] < prev["v"]:
+            phase = "falling"
+        else:
+            # at peak — determine by looking at derivative (sine curve slope)
+            # near frac=0.5 (peak) slope is near zero, check which side we're on
+            phase = "at_peak"
     else:
-        v, phase = prev["v"], "unknown"
+        # prev == nxt means we're past last prediction of the day
+        # use the type of the last known hi/lo
+        phase = "at_high" if prev["type"] == "H" else "at_low"
  
     future    = [p for p in hilo if p["t"] > now]
     next_high = next((p for p in future if p["type"] == "H"), None)
@@ -341,7 +350,7 @@ def build_row(marine, buoy_data, wind, tides, now_utc, now_local):
  
 def collect():
     now_utc   = datetime.now(timezone.utc)
-    now_local = now_utc.astimezone(LOCAL_TZ)  # convert UTC → local, works correctly in any environment
+    now_local = now_utc.replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
     log.info(f"Collection started {now_utc.isoformat()}")
     errors = []
  
@@ -385,3 +394,4 @@ def collect():
  
 if __name__ == "__main__":
     collect()
+ 
