@@ -119,17 +119,33 @@ def fetch_buoy(buoy_id):
     lines = text.split("\n")
     if len(lines) < 3:
         return {}
-    c = lines[2].split()
  
-    def sf(i):
-        if i >= len(c) or is_missing(c[i]):
+    def sf(cols, i):
+        if i >= len(cols) or is_missing(cols[i]):
             return None
-        return to_float(c[i])
+        return to_float(cols[i])
  
-    wvht = sf(8)
-    dpd  = sf(9)
-    mwd  = sf(11)
-    wtmp = sf(14)
+    # Scan up to 10 recent rows to find best wave data
+    # Buoys transmit every 10min but wave sensor doesn't fire every cycle
+    data_lines = [l for l in lines[2:12] if not l.startswith("#")]
+ 
+    # Pick row with valid WVHT (col 8) — fall back to first row for non-wave fields
+    best_wave = None
+    for line in data_lines:
+        cols = line.split()
+        if len(cols) > 8 and not is_missing(cols[8]):
+            best_wave = cols
+            break
+ 
+    # Use first row for met/water temp fields (more frequently updated)
+    first = data_lines[0].split() if data_lines else []
+    wave_row = best_wave if best_wave else first
+ 
+    wvht = sf(wave_row, 8)
+    dpd  = sf(wave_row, 9)
+    mwd  = sf(wave_row, 11)
+    wtmp = sf(first, 14) if first else None
+    c    = first  # use first row for timestamp
  
     try:
         yr  = int("20" + c[0]) if len(c[0]) == 2 else int(c[0])
@@ -325,7 +341,7 @@ def build_row(marine, buoy_data, wind, tides, now_utc, now_local):
  
 def collect():
     now_utc   = datetime.now(timezone.utc)
-    now_local = datetime.now(LOCAL_TZ)
+    now_local = now_utc.astimezone(LOCAL_TZ)  # convert UTC → local, works correctly in any environment
     log.info(f"Collection started {now_utc.isoformat()}")
     errors = []
  
