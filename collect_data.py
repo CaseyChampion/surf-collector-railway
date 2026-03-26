@@ -1,5 +1,5 @@
 """
-Del Mar Surf Data Collector v4
+Del Mar Surf Data Collector v5
 Schema locked — DO NOT change field names or types.
  
 Buoys:
@@ -8,6 +8,12 @@ Buoys:
   b47 = 46047 Tanner Banks        (~121mi W,  NW/SW intermediate, ~4-6hr lead)
   b86 = 46086 San Clemente Basin  (~60mi W,   SW/SSW indicator)
   b25 = 46225 Torrey Pines Outer  (~7mi W,    local nearshore)
+ 
+Changes in v5:
+  - Added fetch_spec() — parses NDBC .spec files for spectral decomposition
+  - New fields per buoy: _swh, _swp, _swd, _wwh, _wwp (swell vs wind wave)
+  - swh/wwh stored in METERS (native .spec units); existing wave_ft remain in FEET
+  - Requires migration_v5.sql to have been run in Supabase first
  
 Changes in v4:
   - b47 (46047 Tanner Banks) re-added — went adrift Mar 2025, redeployed Mar 2026
@@ -45,8 +51,19 @@ BUOYS = [
     {"id": "46225", "key": "b25", "name": "Torrey Pines Outer"},  # local nearshore
 ]
  
+# Buoys to fetch spectral data for — same set, keyed by prefix
+SPEC_BUOYS = {
+    "b54": "46054",  # West Santa Barbara — NW swell 8-10hr lead
+    "b11": "46011",  # Santa Maria        — NW swell 10-12hr lead
+    "b47": "46047",  # Tanner Banks       — deep water NW/SW indicator
+    "b86": "46086",  # San Clemente Basin — SW/SSW indicator
+    "b25": "46225",  # Torrey Pines Outer — local nearshore (highest priority)
+}
+ 
 COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
            "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+ 
+SENTINELS = {"MM","999","9999","99.0","999.0","9999.0","99","9999.9"}
  
 logging.basicConfig(
     filename="surf_collector.log",
@@ -99,7 +116,7 @@ def mph2kts(mph):
     return round(v * 0.868976, 2) if v is not None else None
  
 def is_missing(val):
-    return str(val).strip() in ("MM","999","9999","99.0","999.0","9999.0","99","9999.9")
+    return str(val).strip() in SENTINELS
  
 # ── Supabase REST ─────────────────────────────────────────────────────────────
  
@@ -174,6 +191,53 @@ def fetch_buoy(buoy_id):
     }
  
  
+def fetch_spec(station_id):
+    """
+    Fetch NDBC .spec file and return spectral swell/wind-wave components.
+ 
+    .spec column layout (0-indexed after splitting):
+      0:YY  1:MM  2:DD  3:hh  4:mm
+      5:WVHT  6:SwH  7:SwP  8:WWH  9:WWP  10:SwD  11:WWD  12:STEEPNESS  13:APD  14:MWD
+ 
+    Returns dict with keys: swh, swp, swd, wwh, wwp
+    swh/wwh in METERS, swp/wwp in seconds, swd is compass string.
+    Scans up to 10 rows — most recent row often has MM on wave fields.
+    """
+    url = f"https://www.ndbc.noaa.gov/data/realtime2/{station_id}.spec"
+    empty = {"swh": None, "swp": None, "swd": None, "wwh": None, "wwp": None}
+ 
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        lines = r.text.strip().splitlines()
+        data_lines = [l for l in lines if not l.startswith("#")]
+ 
+        for line in data_lines[:10]:
+            parts = line.split()
+            if len(parts) < 11:
+                continue
+            swh_raw = parts[6]
+            if swh_raw in SENTINELS:
+                continue
+            result = {
+                "swh": float(swh_raw),
+                "swp": None if parts[7] in SENTINELS else to_float(parts[7]),
+                "swd": None if parts[10] in SENTINELS else to_str(parts[10]),
+                "wwh": None if parts[8] in SENTINELS else to_float(parts[8]),
+                "wwp": None if parts[9] in SENTINELS else to_float(parts[9]),
+            }
+            log.info(f"Spec {station_id}: swh={result['swh']}m swp={result['swp']}s "
+                     f"wwh={result['wwh']}m wwp={result['wwp']}s swd={result['swd']}")
+            return result
+ 
+        log.warning(f"fetch_spec {station_id}: no valid SwH in first 10 rows")
+        return empty
+ 
+    except Exception as e:
+        log.warning(f"fetch_spec {station_id} failed: {e}")
+        return empty
+ 
+ 
 def fetch_marine():
     url = (
         f"https://marine-api.open-meteo.com/v1/marine"
@@ -207,7 +271,6 @@ def fetch_wind():
                 nums = re.findall(r"\d+", p.get("windSpeed", "0"))
                 mph  = float(max(nums)) if nums else 0.0
                 comp = to_str(p.get("windDirection")) or "VRB"
-                # VRB = variable, treat as no dominant direction
                 dir_deg = compass_to_deg(comp) if comp != "VRB" else None
                 return {
                     "wind_kts":      mph2kts(mph),
@@ -299,7 +362,7 @@ def fetch_tides():
  
 # ── Build row ─────────────────────────────────────────────────────────────────
  
-def build_row(marine, buoy_data, wind, tides, now_utc, now_local):
+def build_row(marine, buoy_data, spec_data, wind, tides, now_utc, now_local):
     row = {
         # Timestamps
         "collected_at":       now_utc.isoformat(),
@@ -334,7 +397,7 @@ def build_row(marine, buoy_data, wind, tides, now_utc, now_local):
         "spot": "8th-15th St Del Mar",
     }
  
-    # Buoys — loops over BUOYS list, so b47 is picked up automatically
+    # Buoy .txt fields
     for b in BUOYS:
         k = b["key"]
         d = buoy_data.get(k, {})
@@ -344,6 +407,15 @@ def build_row(marine, buoy_data, wind, tides, now_utc, now_local):
         row[f"{k}_dir_comp"] = d.get("dir_comp")
         row[f"{k}_water_f"]  = d.get("water_f")
         row[f"{k}_obs_time"] = d.get("obs_time_iso")
+ 
+    # Buoy .spec fields (spectral decomposition — v5)
+    # swh/wwh in METERS, swp/wwp in seconds, swd is compass string
+    for prefix, spec in spec_data.items():
+        row[f"{prefix}_swh"] = spec.get("swh")
+        row[f"{prefix}_swp"] = spec.get("swp")
+        row[f"{prefix}_swd"] = spec.get("swd")
+        row[f"{prefix}_wwh"] = spec.get("wwh")
+        row[f"{prefix}_wwp"] = spec.get("wwp")
  
     return row
  
@@ -369,6 +441,14 @@ def collect():
         except Exception as e:
             errors.append(f"buoy_{b['id']}: {e}"); log.error(f"Buoy {b['id']}: {e}")
  
+    spec_data = {}
+    for prefix, station_id in SPEC_BUOYS.items():
+        try:
+            spec_data[prefix] = fetch_spec(station_id)
+        except Exception as e:
+            spec_data[prefix] = {"swh": None, "swp": None, "swd": None, "wwh": None, "wwp": None}
+            errors.append(f"spec_{station_id}: {e}"); log.error(f"Spec {station_id}: {e}")
+ 
     wind = {}
     try:
         wind = fetch_wind()
@@ -381,7 +461,7 @@ def collect():
     except Exception as e:
         errors.append(f"tides: {e}"); log.error(f"Tides: {e}")
  
-    row = build_row(marine, buoy_data, wind, tides, now_utc, now_local)
+    row = build_row(marine, buoy_data, spec_data, wind, tides, now_utc, now_local)
  
     try:
         result = supabase_insert("surf_observations", row)
